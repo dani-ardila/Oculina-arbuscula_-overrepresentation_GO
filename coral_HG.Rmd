@@ -10,6 +10,146 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r}
+## ============================================
+## Generar tabla de enriquecimiento a nivel de término GO
+## Usando:
+##   - GO_primeros_68.xlsx
+##   - GO_term.txt
+## ============================================
+
+## 1. Cargar paquetes necesarios
+library(readxl)    # leer .xlsx
+library(dplyr)     # manipulación de datos
+library(tidyr)     # separar columnas
+#install.packages("writex")
+library(writexl)   # escribir .xlsx
+
+## 2. Leer la tabla de los 68 términos GO
+## Debe tener al menos columnas: GO_ID, Frecuencia_en_DEGs
+go68 <- read_excel("GO_primeros_68.xlsx")
+
+## 3. Separar GO_ID en GO_term y Description
+## Ejemplo original: "GO:0005737_cytoplasm"
+go68 <- go68 %>%
+  separate(
+    col = GO_ID,
+    into = c("GO_term", "Description"),
+    sep = "_",
+    extra = "merge"     # si hay mas "_" se queda todo en Description
+  )
+
+## 4. Leer el universo de términos GO
+## Formato de GO_term.txt:
+## GO:XXXXXX \t nombre_del_término
+go_universe <- read.delim(
+  "GO_term.txt",
+  header = FALSE,
+  sep = "\t",
+  col.names = c("GO_ID", "GO_name")
+)
+
+## 5. Calcular N_GO: número total de términos GO distintos
+N_GO <- go_universe %>%
+  distinct(GO_ID) %>%
+  nrow()
+
+cat("Número total de términos GO en GO_term.txt (N_GO):", N_GO, "\n")
 
 ```
 
+```{r}
+## 6. Calcular n_total: suma de las frecuencias en tus 68 términos
+n_total <- sum(go68$Frecuencia_en_DEGs, na.rm = TRUE)
+cat("Número total de anotaciones GO en tus 68 términos (n_total):", n_total, "\n")
+
+## 7. Probabilidad esperada si todos los GO fueran igual de probables
+p_expected <- 1 / N_GO
+
+## 8. Calcular probabilidad observada y fold enrichment
+go68 <- go68 %>%
+  mutate(
+    P_observada   = Frecuencia_en_DEGs / n_total,
+    P_esperada    = p_expected,
+    Fold_enrichment = P_observada / P_esperada
+  )
+
+## 9. Calcular p-valor binomial de cola superior
+## P(X >= k) con X ~ Binomial(n_total, p_expected)
+go68 <- go68 %>%
+  mutate(
+    p_value = pbinom(
+      q = Frecuencia_en_DEGs - 1,
+      size = n_total,
+      prob = p_expected,
+      lower.tail = FALSE   # da P(X >= k)
+    )
+  )
+
+## 10. Corrección por FDR (Benjamini-Hochberg)
+go68 <- go68 %>%
+  arrange(p_value) %>%
+  mutate(
+    FDR = p.adjust(p_value, method = "BH")
+  )
+
+## 11. Ordenar columnas en formato final
+tabla_final <- go68 %>%
+  select(
+    GO_term,
+    Description,
+    Frecuencia_en_DEGs,
+    P_observada,
+    P_esperada,
+    Fold_enrichment,
+    p_value,
+    FDR
+  )
+
+## 12. Guardar la tabla final como Excel
+write_xlsx(tabla_final, "GO_enrichment_68.xlsx")
+
+cat("Tabla generada y guardada como GO_term_level_enrichment_68.xlsx\n")
+```
+
+```{r}
+# Paquetes
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(stringr)
+
+# 1. Leer la tabla con los resultados binomiales
+go_tbl <- read_excel("GO_enrichment_68.xlsx")
+
+# 2. Crear columna -log10(FDR) y filtrar términos significativos
+go_sig <- go_tbl %>%
+  filter(FDR < 0.05) %>%                       # puedes ajustar el umbral
+  mutate(
+    minus_log10_FDR = -log10(FDR),
+    # Acortar descripciones muy largas para la figura
+    Description_short = str_trunc(Description, width = 50)
+  ) %>%
+  arrange(desc(minus_log10_FDR)) %>%
+  slice_head(n = 20) %>%                       # top 20 más significativos
+  mutate(
+    Description_short = fct_reorder(Description_short, minus_log10_FDR)
+  )
+
+# 3. Gráfico de barras horizontales
+ggplot(go_sig, aes(x = Description_short, y = minus_log10_FDR)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    x = "Término GO",
+    y = expression(-log[10]("FDR")),
+    title = "Términos GO enriquecidos (prueba binomial)"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.title.y = element_text(margin = margin(r = 5)),
+    axis.title.x = element_text(margin = margin(t = 5))
+  )
+
+```
